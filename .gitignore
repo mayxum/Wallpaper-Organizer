@@ -1,0 +1,27 @@
+# Build artifacts
+   dist/
+   build/
+   *.spec.bak
+   app_icon.ico
+
+   # Python
+   __pycache__/
+   *.pyc
+   *.pyo
+   *.pyd
+   .venv/
+   venv/
+   env/
+   *.egg-info/
+
+   # IDE
+   .vscode/
+   .idea/
+   *.swp
+
+   # OS
+   .DS_Store
+   Thumbs.db
+
+   # App config (local user settings)
+   .wallpaper_organizer.json
