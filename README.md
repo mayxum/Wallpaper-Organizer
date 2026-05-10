@@ -5,7 +5,7 @@ Describe categories in plain English, and the app sorts your wallpaper
 folder automatically.
 
 ## Download
-Grab `WallpaperOrganizer.zip` below. Unzip anywhere, run 
+Grab `WallpaperOrganizer.zip`in releases. Unzip anywhere, run 
 `WallpaperOrganizer.exe`. No installation needed.
 
 ## First launch
