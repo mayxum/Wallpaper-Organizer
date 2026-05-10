@@ -3,7 +3,7 @@ REM ============================================================
 REM Wallpaper Organizer - build script for Windows
 REM
 REM What this does:
-REM   1. Installs/updates PyInstaller
+REM   1. Installs/updates PyInstaller and customtkinter
 REM   2. Cleans previous build folders
 REM   3. Builds dist\WallpaperOrganizer\ (a folder bundle)
 REM   4. Zips it to dist\WallpaperOrganizer.zip for distribution
@@ -20,8 +20,8 @@ echo   Wallpaper Organizer - Build Script
 echo ============================================================
 echo.
 
-echo [1/4] Installing/updating PyInstaller...
-python -m pip install --upgrade pyinstaller
+echo [1/4] Installing/updating build dependencies...
+python -m pip install --upgrade pyinstaller customtkinter
 if errorlevel 1 goto :fail
 
 echo.
@@ -65,7 +65,7 @@ echo   BUILD FAILED
 echo ============================================================
 echo.
 echo Scroll up to see the error. Most common causes:
-echo   - Missing dependency: python -m pip install torch transformers pillow
+echo   - Missing dependency: python -m pip install torch transformers pillow customtkinter
 echo   - Python version mismatch: PyInstaller 6.19+ is needed for Python 3.14
 echo.
 pause

@@ -9,8 +9,14 @@ A `WallpaperOrganizer.zip` (~250–400 MB). Friends unzip it, double-click `Wall
 ## Prerequisites
 
 - The same Windows machine where the app already runs
-- Python 3.x with `torch`, `transformers`, `pillow` already installed
+- Python 3.x with `torch`, `transformers`, `pillow`, and `customtkinter` already installed
 - ~3 GB free disk space during the build (the final zip is much smaller)
+
+If you're missing customtkinter (added in v1.1.0 for the modern UI):
+```
+python -m pip install customtkinter
+```
+`build.bat` also installs it automatically as part of step 1, so you can skip that if you're running the build script.
 
 ## Build it
 
@@ -96,6 +102,12 @@ Their Windows is missing the Visual C++ runtime. Have them install the [Microsof
 
 **Friend's machine: app launches then closes immediately**
 Usually missing model weights download (no internet) or write permission issue. Have them run from `cmd` to see the error.
+
+**Build error: "ModuleNotFoundError: No module named 'customtkinter'"**
+Install it: `python -m pip install customtkinter`. The build script does this automatically — this error means you're running PyInstaller manually without running step 1.
+
+**Bundled exe crashes with "FileNotFoundError" mentioning a `.json` theme or `.otf` font**
+customtkinter's theme files didn't get bundled. Make sure your spec has the `collect_all('customtkinter')` block at the top and that `ctk_datas`, `ctk_binaries`, and `ctk_hiddenimports` are wired into `Analysis(...)`. Re-run `build.bat`.
 
 ## Updating
 

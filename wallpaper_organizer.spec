@@ -17,6 +17,9 @@ import os
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
+
 # ---- Build a .ico for the exe icon -------------------------------------
 # Generated programmatically so the project stays a single .py + spec.
 def _make_ico():
@@ -44,16 +47,24 @@ def _make_ico():
 _ICON_PATH = _make_ico()
 
 
+# ---- Collect customtkinter -----------------------------------------------
+# customtkinter ships JSON theme files + .otf fonts as package data. If we
+# don't collect them explicitly, the bundled exe will fail at startup with
+# FileNotFoundError trying to load color themes. collect_all grabs the
+# package's data files, binary deps, and submodules in one go.
+ctk_datas, ctk_binaries, ctk_hiddenimports = collect_all('customtkinter')
+
+
 # ---- Analysis ----------------------------------------------------------
 a = Analysis(
     ['wallpaper_organizer.py'],
     pathex=[],
-    binaries=[],
-    datas=[],
+    binaries=ctk_binaries,
+    datas=ctk_datas,
     hiddenimports=[
         # Pillow/Tkinter integration sometimes isn't auto-detected
         'PIL._tkinter_finder',
-    ],
+    ] + ctk_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
