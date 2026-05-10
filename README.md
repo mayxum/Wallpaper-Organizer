@@ -1,4 +1,4 @@
-# Wallpaper Organizer v1.0.0
+# Wallpaper Organizer v1.1.0
 
 AI-powered wallpaper sorter using CLIP zero-shot image classification. 
 Describe categories in plain English, and the app sorts your wallpaper 
