@@ -70,6 +70,11 @@ a = Analysis(
     runtime_hooks=[],
     # Modules transitive deps drag in but we don't actually use.
     # Excluding them shrinks the bundle without affecting functionality.
+    # IMPORTANT: only exclude things we are SURE nothing imports at runtime.
+    # Things we tried excluding and had to put back:
+    #   - unittest          (stdlib; libraries import it for assertion classes)
+    #   - torch.distributed (torch's CPU code path lazy-imports it)
+    #   - torch.testing     (same)
     excludes=[
         # Big siblings of torch we don't import
         'torchvision',
@@ -82,15 +87,11 @@ a = Analysis(
         'IPython',
         'jupyter',
         'notebook',
-        # Test/dev tooling
+        # Test tooling (third-party only — pytest is fine, unittest is stdlib)
         'pytest',
-        'unittest',
         # Tensorboard support inside torch (we don't log to it)
         'tensorboard',
         'torch.utils.tensorboard',
-        # Distributed training (single-process classification doesn't need it)
-        'torch.distributed',
-        'torch.testing',
     ],
     noarchive=False,
     optimize=0,
