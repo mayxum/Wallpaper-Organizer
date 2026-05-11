@@ -45,17 +45,20 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".j
 
 # Default categories: (folder name, CLIP prompt). Edit freely in the GUI.
 DEFAULT_CATEGORIES = [
-    ("Landscapes", "a scenic landscape photograph with mountains, valleys, beaches, or open vistas"),
-    ("Nature",     "a close-up nature photograph of plants, flowers, forests, or wildlife"),
-    ("Cities",     "a cityscape photograph showing buildings, skylines, streets, or urban architecture"),
-    ("Space",      "a photograph of stars, galaxies, planets, nebulae, or outer space"),
-    ("Anime",      "anime or manga style illustrated artwork featuring a character"),
-    ("Portraits",  "a portrait photograph of a real person"),
-    ("Cars",       "a photograph of cars, motorcycles, or other vehicles"),
-    ("Abstract",   "abstract art, geometric patterns, or digital designs"),
-    ("Minimalist", "a minimalist wallpaper with simple shapes, gradients, or solid colors"),
-    ("Gaming",     "a screenshot or artwork from a video game"),
+    # (folder_name, clip_prompt, threshold)
+    ("Landscapes", "a scenic landscape photograph with mountains, valleys, beaches, or open vistas", 0.15),
+    ("Nature",     "a close-up nature photograph of plants, flowers, forests, or wildlife", 0.15),
+    ("Cities",     "a cityscape photograph showing buildings, skylines, streets, or urban architecture", 0.15),
+    ("Space",      "a photograph of stars, galaxies, planets, nebulae, or outer space", 0.15),
+    ("Anime",      "anime or manga style illustrated artwork featuring a character", 0.15),
+    ("Portraits",  "a portrait photograph of a real person", 0.15),
+    ("Cars",       "a photograph of cars, motorcycles, or other vehicles", 0.15),
+    ("Abstract",   "abstract art, geometric patterns, or digital designs", 0.15),
+    ("Minimalist", "a minimalist wallpaper with simple shapes, gradients, or solid colors", 0.15),
+    ("Gaming",     "a screenshot or artwork from a video game", 0.15),
 ]
+
+DEFAULT_THRESHOLD = 0.15
 
 CONFIG_FILE = Path.home() / ".wallpaper_organizer.json"
 
@@ -165,18 +168,26 @@ HELP_SECTIONS: list[dict] = [
         "subtitle": "Balancing precision against coverage.",
         "blocks": [
             ("p", 'Anything scoring BELOW the threshold is dumped into an "Unsorted" folder instead of being forced into a wrong category.'),
-            ("h", "Rule of thumb"),
-            ("p", "With N categories, set threshold roughly 1/N, then tune based on what you see in the log."),
+            ("h", "Default threshold"),
+            ("p", "The threshold slider (or type-in field) at the bottom of Options sets the DEFAULT threshold — applied to any category that doesn't have its own. With N categories, set it roughly 1/N, then tune based on what you see in the log."),
             ("kv", [
                 ("10 categories", "threshold around 0.15"),
                 ("5 categories",  "threshold around 0.25"),
                 ("3 categories",  "threshold around 0.10"),
             ]),
             ("tip", "3-category setups want LOWER than 1/N (~0.10) — real winners in 3-way contests still hover near 0.40, and you don't want to dump them all to Unsorted."),
-            ("h", "Tuning"),
+            ("h", "Per-category override"),
+            ("p", "Each category has its own threshold column. Different prompts naturally score differently — your NSFW prompt may peak at 0.50+ for clear matches while Scenery hovers around 0.20. Per-category thresholds let each prompt have its own sensitivity."),
             ("ul", [
-                'If too much ends up in "Unsorted" — lower the threshold.',
-                "If wrong-folder mistakes are creeping in — raise it.",
+                "Double-click any category row to edit its threshold.",
+                "Leave it at the default if you're unsure — the global slider value applies.",
+                "Raise it for categories that over-fire (grabbing too much).",
+                "Lower it for categories that under-fire (legit matches scoring below their threshold).",
+            ]),
+            ("h", "Tuning workflow"),
+            ("ul", [
+                'If too much ends up in "Unsorted" — lower the relevant category\'s threshold.',
+                "If wrong-folder mistakes are creeping in — raise that category's threshold.",
             ]),
         ],
     },
@@ -240,6 +251,9 @@ HELP_SECTIONS: list[dict] = [
                 'Borderline images often have legitimate ambiguity (a city at sunset can fairly belong to "Cities" or "Landscapes"). Don\'t try to make CLIP perfect — for the last few percent, use the Gallery view to manually move them, or fix them in your file manager afterward.',
                 "App settings persist in ~/.wallpaper_organizer.json (your home folder). The destination manifest is in <destination>/.wallpaper_organizer.json. Different files — don't confuse them.",
             ]),
+            ("h", "Undo"),
+            ("p", "After Apply, the red UNDO button reverses the most recent apply — deletes the copied files (copy mode) or moves them back to their original locations (move mode). Only the most recent apply is undoable; older applies are committed."),
+            ("tip", "Files you've modified between Apply and Undo are skipped to protect your edits. You'll see them listed in the log."),
             ("h", "Supported file types"),
             ("code", ".jpg, .jpeg, .png, .webp, .bmp, .gif, .tiff, .jfif"),
             ("p", "Subfolders inside the source are scanned recursively."),
@@ -294,6 +308,11 @@ class ImageManifest:
         self.path = dest / MANIFEST_FILENAME
         self.entries: list[dict] = []
         self._by_hash: dict[str, dict] = {}
+        # last_apply records the most recent Apply operation so we can undo it.
+        # Schema: {"timestamp": iso8601, "copy_mode": bool,
+        #          "operations": [{"src": "...", "target": "...", "hash": "..."}]}
+        # Only the most recent apply is undoable. Older applies are committed.
+        self.last_apply: Optional[dict] = None
         self.load()
 
     def load(self):
@@ -303,18 +322,23 @@ class ImageManifest:
             data = json.loads(self.path.read_text())
             self.entries = data.get("entries", []) or []
             self._by_hash = {e["hash"]: e for e in self.entries if e.get("hash")}
+            self.last_apply = data.get("last_apply")
         except Exception:
             # Corrupt manifest — start fresh, but don't blow up.
             self.entries = []
             self._by_hash = {}
+            self.last_apply = None
 
     def save(self):
         try:
             self.dest.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps({
+            data = {
                 "version": self.VERSION,
                 "entries": self.entries,
-            }, indent=2))
+            }
+            if self.last_apply is not None:
+                data["last_apply"] = self.last_apply
+            self.path.write_text(json.dumps(data, indent=2))
         except Exception:
             pass
 
@@ -335,6 +359,27 @@ class ImageManifest:
         else:
             self.entries.append(entry)
             self._by_hash[h] = entry
+
+    def remove_by_hash(self, h: str):
+        """Remove the entry with the given hash, if present.
+        Used during Undo to remove records of files we're reverting."""
+        if h in self._by_hash:
+            del self._by_hash[h]
+        self.entries = [e for e in self.entries if e.get("hash") != h]
+
+    def record_apply(self, copy_mode: bool, operations: list[dict]):
+        """Store the most recent apply session for potential undo.
+        operations: list of {"src": original_path, "target": destination_path, "hash": ...}"""
+        self.last_apply = {
+            "timestamp":  datetime.now().isoformat(timespec="seconds"),
+            "copy_mode":  copy_mode,
+            "operations": operations,
+        }
+
+    def clear_last_apply(self):
+        """Mark the last apply as no longer undoable (e.g. after a fresh run
+        invalidates the previous one, or after Undo consumes it)."""
+        self.last_apply = None
 
     def stats(self) -> dict:
         """Counts per category currently tracked in the manifest."""
@@ -380,9 +425,11 @@ class CLIPClassifier:
                 return getattr(output, attr)
         raise RuntimeError(f"Unexpected CLIP {kind} output type: {type(output)}")
 
-    def set_categories(self, categories: list[tuple[str, str]]) -> None:
+    def set_categories(self, categories) -> None:
+        """Accepts (name, prompt) or (name, prompt, threshold) tuples.
+        Threshold is ignored here — applied at the job level."""
         self._categories = list(categories)
-        prompts = [prompt for _, prompt in self._categories]
+        prompts = [cat[1] for cat in self._categories]
         inputs = self.processor(text=prompts, return_tensors="pt", padding=True).to(self.device)
         with self.torch.no_grad():
             feats = self._extract_features(self.model.get_text_features(**inputs), "text")
@@ -501,16 +548,24 @@ class ClassifyJob:
         self,
         source: Path,
         dest: Path,
-        categories: list[tuple[str, str]],
-        threshold: float,
+        categories,
         manifest: ImageManifest,
         log_queue: Queue,
         cancel_event: threading.Event,
     ):
+        """categories is a list of (name, prompt, threshold) tuples.
+        Threshold is per-category — applied to that category's winning score."""
         self.source = source
         self.dest = dest
         self.categories = categories
-        self.threshold = threshold
+        # Build a name → threshold lookup for the run loop. Default 0.0
+        # (i.e. no threshold) if missing — defensive against malformed data.
+        self.thresholds = {}
+        for cat in categories:
+            if len(cat) >= 3:
+                self.thresholds[cat[0]] = float(cat[2])
+            else:
+                self.thresholds[cat[0]] = 0.0
         self.manifest = manifest
         self.log_queue = log_queue
         self.cancel_event = cancel_event
@@ -589,7 +644,11 @@ class ClassifyJob:
                 else:
                     name, conf = ranked[0]
                     runner_up = ranked[1] if len(ranked) > 1 else None
-                    if conf < self.threshold:
+                    # Per-category threshold: each category has its own cutoff.
+                    # If the winner's score is below its category's threshold,
+                    # send the image to Unsorted instead.
+                    cat_threshold = self.thresholds.get(name, 0.0)
+                    if conf < cat_threshold:
                         name = "Unsorted"
                     runner_up_str = (
                         f"  [also: {runner_up[0]} {runner_up[1]:.2f}]" if runner_up else ""
@@ -667,6 +726,10 @@ class ApplyJob:
             done = 0
             start = time.monotonic()
             by_cat: dict[str, int] = {}
+            # Operations log for the undo feature — recorded into the manifest
+            # at the end of the run. Each entry has enough info to reverse
+            # the op: source path, target path, hash, action type.
+            operations: list[dict] = []
 
             for item in self.plan_items:
                 if self.cancel_event.is_set():
@@ -688,9 +751,19 @@ class ApplyJob:
                     else:
                         shutil.move(str(src), str(target))
 
-                    # Update manifest. Hash already computed during classify.
+                    # Record for undo. Hash of the *final* file content (taken
+                    # before any later modifications) lets us verify integrity
+                    # at undo time and skip files the user has since edited.
+                    h = item.get("hash", "")
+                    operations.append({
+                        "src":    str(src),
+                        "target": str(target),
+                        "hash":   h,
+                    })
+
+                    # Update manifest with the categorization record.
                     self.manifest.upsert({
-                        "hash":              item.get("hash", ""),
+                        "hash":              h,
                         "filename":          target.name,
                         "source_filename":   src.name,
                         "category":          category,
@@ -704,7 +777,9 @@ class ApplyJob:
                     self._emit("log", f"ERROR on {src.name}: {e}")
                 self._emit("progress", (done + errors, total))
 
-            # Persist the manifest now that all writes are done.
+            # Record the apply session for potential undo, then persist.
+            if operations:
+                self.manifest.record_apply(self.copy_mode, operations)
             self.manifest.save()
             elapsed = time.monotonic() - start
             self._emit("apply_done", {
@@ -714,6 +789,136 @@ class ApplyJob:
                 "errors":   errors,
                 "total":    total,
                 "elapsed":  elapsed,
+                "undoable": bool(operations),
+            })
+        except Exception as e:
+            self._emit("error", str(e))
+
+
+class UndoJob:
+    """Reverses the most recent Apply operation.
+
+    Iterates the manifest's last_apply.operations in reverse and undoes each:
+      - If the apply was a COPY: delete the target file
+      - If the apply was a MOVE: move the target back to the original source
+
+    Defensive about file changes since apply:
+      - If the target file no longer exists, skip silently (already moved/deleted)
+      - If the target's quick_hash no longer matches what we recorded, skip and warn
+        (user has edited the file — undo could destroy their changes)
+
+    Manifest entries for successfully undone files are removed, so re-running
+    Organize after Undo will pick those source images up again.
+    """
+
+    def __init__(
+        self,
+        dest: Path,
+        manifest: ImageManifest,
+        log_queue: Queue,
+        cancel_event: threading.Event,
+    ):
+        self.dest = dest
+        self.manifest = manifest
+        self.log_queue = log_queue
+        self.cancel_event = cancel_event
+
+    def _emit(self, kind: str, payload):
+        self.log_queue.put((kind, payload))
+
+    def run(self):
+        try:
+            last = self.manifest.last_apply
+            if not last:
+                self._emit("log", "Nothing to undo — no recent apply on record.")
+                self._emit("undo_done", {"done": 0, "skipped": 0, "errors": 0})
+                return
+
+            operations = last.get("operations", [])
+            copy_mode = bool(last.get("copy_mode", True))
+            total = len(operations)
+            action = "Deleting copies" if copy_mode else "Moving files back"
+            self._emit("status", f"{action} ({total} file(s))…")
+            self._emit("log", f"=== Undoing last apply ({total} operation(s)) ===")
+
+            done = 0
+            skipped = 0
+            errors = 0
+            start = time.monotonic()
+
+            # Reverse iteration so newer ops (which may have been collision-renamed
+            # like file_1.jpg) get undone before older ones in the same destination.
+            for op in reversed(operations):
+                if self.cancel_event.is_set():
+                    self._emit("log", "Cancelled mid-undo.")
+                    break
+
+                src = Path(op.get("src", ""))
+                target = Path(op.get("target", ""))
+                expected_hash = op.get("hash", "")
+
+                try:
+                    if not target.exists():
+                        skipped += 1
+                        self._emit("log",
+                                   f"SKIP {target.name}: target no longer exists")
+                        continue
+
+                    # Integrity check — if the file's been modified since
+                    # apply, refuse to undo (don't destroy user's edits).
+                    if expected_hash:
+                        actual_hash = _quick_hash(target)
+                        if actual_hash != expected_hash:
+                            skipped += 1
+                            self._emit("log",
+                                       f"SKIP {target.name}: file modified since apply")
+                            continue
+
+                    if copy_mode:
+                        # Apply was a copy — source is still there; just remove
+                        # the target.
+                        target.unlink()
+                    else:
+                        # Apply was a move — restore the file to its original
+                        # source location. Make sure the source dir exists
+                        # (user may have moved things around since).
+                        src.parent.mkdir(parents=True, exist_ok=True)
+                        if src.exists():
+                            # Edge case: a different file is now at the original
+                            # source path. Don't overwrite it; rename instead.
+                            j = 1
+                            alt = src.with_name(f"{src.stem}_restored{src.suffix}")
+                            while alt.exists():
+                                alt = src.with_name(
+                                    f"{src.stem}_restored_{j}{src.suffix}")
+                                j += 1
+                            shutil.move(str(target), str(alt))
+                            self._emit("log",
+                                       f"Restored {target.name} → {alt} "
+                                       f"(original path occupied)")
+                        else:
+                            shutil.move(str(target), str(src))
+
+                    # Drop the manifest entry so re-runs pick this image up again.
+                    if expected_hash:
+                        self.manifest.remove_by_hash(expected_hash)
+                    done += 1
+                except Exception as e:
+                    errors += 1
+                    self._emit("log", f"ERROR undoing {target.name}: {e}")
+
+                self._emit("progress", (done + skipped + errors, total))
+
+            # Clear the last-apply record (consumed) and persist.
+            self.manifest.clear_last_apply()
+            self.manifest.save()
+            elapsed = time.monotonic() - start
+            self._emit("undo_done", {
+                "done":    done,
+                "skipped": skipped,
+                "errors":  errors,
+                "total":   total,
+                "elapsed": elapsed,
             })
         except Exception as e:
             self._emit("error", str(e))
@@ -777,6 +982,12 @@ class WallpaperOrganizerApp:
         self._load_config()
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # Keep the Undo button state in sync with the destination — when
+        # the user picks a new dest folder, peek at its manifest to see if
+        # there's an undoable apply on record there.
+        self.dest_var.trace_add("write", lambda *a: self._refresh_undo_button())
+        # Initial state check (in case dest is loaded from config)
+        self.root.after(50, self._refresh_undo_button)
         self._poll_queue()
 
     # ---- UI build ----
@@ -859,7 +1070,7 @@ class WallpaperOrganizerApp:
     def _build_categories(self, parent):
         section = self._section_frame(
             parent,
-            "Categories  (folder name → CLIP prompt — double-click to edit)",
+            "Categories  (folder name → CLIP prompt → threshold — double-click to edit)",
         )
 
         wrap = ctk.CTkFrame(section, fg_color="transparent")
@@ -870,13 +1081,15 @@ class WallpaperOrganizerApp:
         tree_card.pack(side="left", fill="both", expand=True)
 
         self.cat_tree = ttk.Treeview(
-            tree_card, columns=("name", "prompt"), show="headings",
+            tree_card, columns=("name", "prompt", "threshold"), show="headings",
             height=8, style="WO.Treeview",
         )
         self.cat_tree.heading("name", text="Folder")
         self.cat_tree.heading("prompt", text="CLIP prompt")
-        self.cat_tree.column("name", width=170, anchor="w")
-        self.cat_tree.column("prompt", width=560, anchor="w")
+        self.cat_tree.heading("threshold", text="Threshold")
+        self.cat_tree.column("name", width=160, anchor="w")
+        self.cat_tree.column("prompt", width=480, anchor="w")
+        self.cat_tree.column("threshold", width=80, anchor="center")
         self.cat_tree.pack(side="left", fill="both", expand=True, padx=2, pady=2)
         self.cat_tree.bind("<Double-1>", lambda e: self._edit_cat())
 
@@ -896,8 +1109,19 @@ class WallpaperOrganizerApp:
             ctk.CTkButton(rail, text=label, width=92, height=32, command=cmd)\
                 .pack(fill="x", pady=2)
 
-        for name, prompt in (self._loaded_cats or DEFAULT_CATEGORIES):
-            self.cat_tree.insert("", "end", values=(name, prompt))
+        # Insert loaded or default categories. Normalize old 2-tuple format
+        # to (name, prompt, threshold).
+        cats = self._loaded_cats or DEFAULT_CATEGORIES
+        for cat in cats:
+            if len(cat) == 2:
+                name, prompt = cat
+                threshold = self.threshold_var.get()
+            else:
+                name, prompt, threshold = cat[0], cat[1], cat[2]
+            self.cat_tree.insert(
+                "", "end",
+                values=(name, prompt, f"{float(threshold):.2f}"),
+            )
 
     def _build_options(self, parent):
         section = self._section_frame(parent, "Options")
@@ -907,7 +1131,9 @@ class WallpaperOrganizerApp:
             variable=self.copy_var,
         ).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 4))
 
-        ctk.CTkLabel(section, text="Confidence threshold:")\
+        # Default threshold — applies to new categories. Each existing
+        # category has its own threshold (editable per-row in the table).
+        ctk.CTkLabel(section, text="Default threshold:")\
             .grid(row=1, column=0, sticky="w", padx=14, pady=(4, 12))
         slider_wrap = ctk.CTkFrame(section, fg_color="transparent")
         slider_wrap.grid(row=1, column=1, sticky="w", padx=20, pady=(4, 12))
@@ -917,17 +1143,44 @@ class WallpaperOrganizerApp:
             variable=self.threshold_var, width=240,
         )
         self.thresh_slider.pack(side="left")
-        self.thresh_label = ctk.CTkLabel(
-            slider_wrap,
-            text=f"{self.threshold_var.get():.2f}",
-            width=44, anchor="w",
+
+        # Editable text entry alongside the slider. Both bound via a
+        # shared StringVar — drag the slider, the number updates; type
+        # in the entry, the slider moves.
+        self.thresh_entry_var = tk.StringVar(value=f"{self.threshold_var.get():.2f}")
+        self.thresh_entry = ctk.CTkEntry(
+            slider_wrap, textvariable=self.thresh_entry_var,
+            width=60, height=28, justify="center",
             font=ctk.CTkFont(size=13, weight="bold"),
         )
-        self.thresh_label.pack(side="left", padx=(10, 0))
-        self.threshold_var.trace_add(
-            "write",
-            lambda *a: self.thresh_label.configure(text=f"{self.threshold_var.get():.2f}"),
-        )
+        self.thresh_entry.pack(side="left", padx=(10, 0))
+
+        # Sync the entry when the slider moves
+        def _sync_entry_from_slider(*_):
+            try:
+                self.thresh_entry_var.set(f"{self.threshold_var.get():.2f}")
+            except Exception:
+                pass
+        self.threshold_var.trace_add("write", _sync_entry_from_slider)
+
+        # Sync the slider when the entry is edited and committed
+        def _sync_slider_from_entry(*_):
+            try:
+                v = float(self.thresh_entry_var.get())
+                v = max(0.0, min(0.9, v))
+                self.threshold_var.set(v)
+            except (ValueError, tk.TclError):
+                # Invalid input — reset to current slider value
+                self.thresh_entry_var.set(f"{self.threshold_var.get():.2f}")
+        self.thresh_entry.bind("<Return>", _sync_slider_from_entry)
+        self.thresh_entry.bind("<FocusOut>", _sync_slider_from_entry)
+
+        ctk.CTkLabel(
+            section,
+            text="New categories use this value. Per-category thresholds editable in the table above.",
+            font=ctk.CTkFont(size=10),
+            text_color=("gray50", "gray60"),
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 12))
 
     def _build_run_row(self, parent):
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -953,6 +1206,18 @@ class WallpaperOrganizerApp:
             state="disabled",
         )
         self.apply_btn.pack(side="left", padx=(8, 0))
+
+        # Undo last Apply — reverses the most recent commit. Disabled when
+        # no undoable apply is recorded in the destination's manifest.
+        self.undo_btn = ctk.CTkButton(
+            row, text="Undo", width=80, height=38,
+            command=self._start_undo,
+            fg_color=("#dc2626", "#ef4444"),  # red to flag it as destructive
+            hover_color=("#b91c1c", "#dc2626"),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            state="disabled",
+        )
+        self.undo_btn.pack(side="left", padx=(8, 0))
 
         self.cancel_btn = self._ghost_button(row, "Cancel", self._cancel, width=92)
         self.cancel_btn.configure(state="disabled")
@@ -1106,8 +1371,8 @@ class WallpaperOrganizerApp:
     def _compute_category_colors(self, categories):
         """Assign a stable color from CATEGORY_PALETTE to each category."""
         colors: dict[str, tuple] = {}
-        for i, (name, _) in enumerate(categories):
-            colors[name] = CATEGORY_PALETTE[i % len(CATEGORY_PALETTE)]
+        for i, cat in enumerate(categories):
+            colors[cat[0]] = CATEGORY_PALETTE[i % len(CATEGORY_PALETTE)]
         colors["Unsorted"] = UNSORTED_COLOR
         self._category_colors = colors
 
@@ -1135,8 +1400,8 @@ class WallpaperOrganizerApp:
         self._counts["__total__"] = 0
 
         # One chip per category
-        for name, _ in categories:
-            self._add_counter_chip(name)
+        for cat in categories:
+            self._add_counter_chip(cat[0])
         self._add_counter_chip("Unsorted")
 
     def _add_counter_chip(self, name: str):
@@ -1169,7 +1434,7 @@ class WallpaperOrganizerApp:
             )
 
     def _refresh_filter_options(self, categories):
-        options = ["All"] + [name for name, _ in categories] + ["Unsorted"]
+        options = ["All"] + [cat[0] for cat in categories] + ["Unsorted"]
         self.filter_combo.configure(values=options)
         self.filter_var.set("All")
 
@@ -1233,7 +1498,7 @@ class WallpaperOrganizerApp:
             cat = item.get("category", "Unsorted")
             by_cat.setdefault(cat, []).append(item)
 
-        category_order = [name for name, _ in self._current_categories] + ["Unsorted"]
+        category_order = [cat[0] for cat in self._current_categories] + ["Unsorted"]
         for cat in category_order:
             if cat in by_cat:
                 self._add_gallery_section(cat, by_cat[cat])
@@ -1258,7 +1523,7 @@ class WallpaperOrganizerApp:
 
     def _all_categories_for_move(self) -> list[str]:
         """List of category names available as Move-to targets."""
-        return [name for name, _ in self._current_categories] + ["Unsorted"]
+        return [cat[0] for cat in self._current_categories] + ["Unsorted"]
 
     def _on_thumb_click(self, item: dict):
         """Thumbnail clicked — open preview."""
@@ -1469,13 +1734,16 @@ class WallpaperOrganizerApp:
             return
         for item in self.cat_tree.get_children():
             self.cat_tree.delete(item)
-        for name, prompt in DEFAULT_CATEGORIES:
-            self.cat_tree.insert("", "end", values=(name, prompt))
+        for name, prompt, threshold in DEFAULT_CATEGORIES:
+            self.cat_tree.insert(
+                "", "end",
+                values=(name, prompt, f"{threshold:.2f}"),
+            )
 
     def _cat_dialog(self, item_id):
         d = ctk.CTkToplevel(self.root)
         d.title("Category")
-        d.geometry("540x300")
+        d.geometry("560x400")
         d.transient(self.root)
         d.resizable(False, False)
         d.after(80, d.lift)
@@ -1485,6 +1753,7 @@ class WallpaperOrganizerApp:
         body = ctk.CTkFrame(d, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=20, pady=20)
 
+        # Folder name
         ctk.CTkLabel(
             body, text="Folder name", anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
@@ -1493,17 +1762,65 @@ class WallpaperOrganizerApp:
         ctk.CTkEntry(body, textvariable=name_var, height=34)\
             .pack(fill="x", pady=(4, 12))
 
+        # CLIP prompt
         ctk.CTkLabel(
             body, text="CLIP prompt  (describe what should land here)", anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
         ).pack(fill="x")
         prompt_text = ctk.CTkTextbox(body, height=90)
-        prompt_text.pack(fill="x", pady=(4, 14))
+        prompt_text.pack(fill="x", pady=(4, 12))
 
+        # Per-category threshold
+        ctk.CTkLabel(
+            body, text="Threshold  (below this, images go to Unsorted)", anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(fill="x")
+        thresh_row = ctk.CTkFrame(body, fg_color="transparent")
+        thresh_row.pack(fill="x", pady=(4, 12))
+
+        thresh_var = tk.DoubleVar(value=self.threshold_var.get())
+        thresh_entry_var = tk.StringVar(value=f"{thresh_var.get():.2f}")
+
+        thresh_slider = ctk.CTkSlider(
+            thresh_row, from_=0.0, to=0.9,
+            variable=thresh_var, width=320,
+        )
+        thresh_slider.pack(side="left")
+        thresh_entry = ctk.CTkEntry(
+            thresh_row, textvariable=thresh_entry_var,
+            width=60, height=28, justify="center",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        )
+        thresh_entry.pack(side="left", padx=(10, 0))
+
+        # Two-way sync between slider and entry
+        def _sync_entry(*_):
+            try:
+                thresh_entry_var.set(f"{thresh_var.get():.2f}")
+            except Exception:
+                pass
+        thresh_var.trace_add("write", _sync_entry)
+
+        def _sync_slider(*_):
+            try:
+                v = float(thresh_entry_var.get())
+                v = max(0.0, min(0.9, v))
+                thresh_var.set(v)
+            except (ValueError, tk.TclError):
+                thresh_entry_var.set(f"{thresh_var.get():.2f}")
+        thresh_entry.bind("<Return>", _sync_slider)
+        thresh_entry.bind("<FocusOut>", _sync_slider)
+
+        # Populate fields if editing
         if item_id is not None:
             vals = self.cat_tree.item(item_id, "values")
             name_var.set(vals[0])
             prompt_text.insert("1.0", vals[1])
+            if len(vals) > 2:
+                try:
+                    thresh_var.set(float(vals[2]))
+                except (ValueError, IndexError):
+                    pass
 
         def save():
             n = name_var.get().strip()
@@ -1512,10 +1829,11 @@ class WallpaperOrganizerApp:
                 messagebox.showerror("Missing fields", "Both fields are required.", parent=d)
                 return
             n = "".join(c for c in n if c.isalnum() or c in " _-").strip()
+            t = f"{thresh_var.get():.2f}"
             if item_id is None:
-                self.cat_tree.insert("", "end", values=(n, p))
+                self.cat_tree.insert("", "end", values=(n, p, t))
             else:
-                self.cat_tree.item(item_id, values=(n, p))
+                self.cat_tree.item(item_id, values=(n, p, t))
             d.destroy()
 
         btns = ctk.CTkFrame(body, fg_color="transparent")
@@ -1527,8 +1845,21 @@ class WallpaperOrganizerApp:
         self._ghost_button(btns, "Cancel", d.destroy, width=100, height=34)\
             .pack(side="right")
 
-    def _get_categories(self) -> list[tuple[str, str]]:
-        return [tuple(self.cat_tree.item(i, "values")) for i in self.cat_tree.get_children()]
+    def _get_categories(self) -> list[tuple[str, str, float]]:
+        """Return categories as (name, prompt, threshold) tuples.
+        Threshold is parsed from the tree's string representation."""
+        result = []
+        default = self.threshold_var.get()
+        for i in self.cat_tree.get_children():
+            vals = self.cat_tree.item(i, "values")
+            name = vals[0] if len(vals) > 0 else ""
+            prompt = vals[1] if len(vals) > 1 else ""
+            try:
+                threshold = float(vals[2]) if len(vals) > 2 else default
+            except (ValueError, TypeError):
+                threshold = default
+            result.append((name, prompt, threshold))
+        return result
 
     # ---- Folder pickers ----
 
@@ -1600,7 +1931,6 @@ class WallpaperOrganizerApp:
             source=Path(source),
             dest=Path(dest),
             categories=cats,
-            threshold=self.threshold_var.get(),
             manifest=self.manifest,
             log_queue=self.log_queue,
             cancel_event=self.cancel_event,
@@ -1661,6 +1991,88 @@ class WallpaperOrganizerApp:
         )
         self.worker = threading.Thread(target=job.run, daemon=True)
         self.worker.start()
+
+    def _start_undo(self):
+        """Reverse the most recent Apply on this destination."""
+        dest = self.dest_var.get().strip()
+        if not dest:
+            messagebox.showerror("Undo",
+                                  "Set a destination folder first.")
+            return
+
+        # Load manifest fresh from disk — the in-memory one may not match
+        # if the user opened the app, never ran Organize, but a prior session
+        # left a last_apply entry.
+        manifest = ImageManifest(Path(dest))
+        if not manifest.last_apply:
+            messagebox.showinfo(
+                "Undo",
+                "No undoable apply found.\n\n"
+                "Undo only reverses the most recent Apply for this destination. "
+                "Older applies are committed.",
+            )
+            self.manifest = manifest
+            self._refresh_undo_button()
+            return
+
+        # Confirm
+        n = len(manifest.last_apply.get("operations", []))
+        copy_mode = manifest.last_apply.get("copy_mode", True)
+        when = manifest.last_apply.get("timestamp", "an unknown time")
+        action_desc = ("delete the copied files" if copy_mode
+                       else "move the files back to their original locations")
+        if not messagebox.askyesno(
+            "Undo last apply",
+            f"This will {action_desc} from the most recent Apply "
+            f"({n} file(s), {when}).\n\n"
+            "Files you've modified since the apply will be skipped to protect "
+            "your edits.\n\n"
+            "Proceed?",
+        ):
+            return
+
+        self.manifest = manifest
+        self.cancel_event.clear()
+        self._phase = "undoing"
+        self.run_btn.configure(state="disabled")
+        self.apply_btn.configure(state="disabled")
+        self.undo_btn.configure(state="disabled")
+        self.cancel_btn.configure(state="normal")
+        self.progress.set(0)
+        self.progress_label.configure(text="")
+        self.status_var.set("Undoing…")
+
+        job = UndoJob(
+            dest=Path(dest),
+            manifest=manifest,
+            log_queue=self.log_queue,
+            cancel_event=self.cancel_event,
+        )
+        self.worker = threading.Thread(target=job.run, daemon=True)
+        self.worker.start()
+
+    def _refresh_undo_button(self):
+        """Enable/disable the Undo button based on manifest state."""
+        if self._phase in ("classifying", "applying", "undoing"):
+            self.undo_btn.configure(state="disabled")
+            return
+        # Try the in-memory manifest first; fall back to peeking at disk
+        # so the button works even before the user clicks Organize.
+        has_undo = False
+        if self.manifest is not None and self.manifest.last_apply:
+            has_undo = True
+        else:
+            dest = self.dest_var.get().strip()
+            if dest:
+                p = Path(dest) / MANIFEST_FILENAME
+                if p.exists():
+                    try:
+                        data = json.loads(p.read_text())
+                        if data.get("last_apply"):
+                            has_undo = True
+                    except Exception:
+                        pass
+        self.undo_btn.configure(state="normal" if has_undo else "disabled")
 
     def _cancel(self):
         self.cancel_event.set()
@@ -1934,6 +2346,8 @@ class WallpaperOrganizerApp:
                     self._on_classify_done(payload)
                 elif kind == "apply_done":
                     self._on_apply_done(payload)
+                elif kind == "undo_done":
+                    self._on_undo_done(payload)
                 elif kind == "error":
                     self._append_log_text(f"FATAL: {payload}", kind="error")
                     self.status_var.set(f"Error: {payload}")
@@ -2008,11 +2422,35 @@ class WallpaperOrganizerApp:
                 f"  Errors: {summary['errors']}", kind="error")
         elapsed = summary.get("elapsed", 0)
         done = summary.get("done", 0)
+        undoable = summary.get("undoable", False)
+        suffix = "  (Undo available)" if undoable else ""
         self.status_var.set(
-            f"{action} done — {done} file(s) in {_format_elapsed(elapsed)}"
+            f"{action} done — {done} file(s) in {_format_elapsed(elapsed)}{suffix}"
         )
         # Plan is consumed; clear so user can't double-apply.
         self.plan.clear()
+        self._phase = "idle"
+        self._reset_buttons()
+
+    def _on_undo_done(self, summary: dict):
+        """Called when UndoJob finishes."""
+        self._append_log_text("")
+        self._append_log_text("=== Undo complete ===", kind="header")
+        done = summary.get("done", 0)
+        skipped = summary.get("skipped", 0)
+        errors = summary.get("errors", 0)
+        elapsed = summary.get("elapsed", 0)
+        self._append_log_text(f"  Reversed: {done}")
+        if skipped:
+            self._append_log_text(
+                f"  Skipped (modified or missing): {skipped}",
+                kind="header",
+            )
+        if errors:
+            self._append_log_text(f"  Errors: {errors}", kind="error")
+        self.status_var.set(
+            f"Undo done — reversed {done} file(s) in {_format_elapsed(elapsed)}"
+        )
         self._phase = "idle"
         self._reset_buttons()
 
@@ -2025,6 +2463,8 @@ class WallpaperOrganizerApp:
         else:
             self.apply_btn.configure(state="disabled")
         self.cancel_btn.configure(state="disabled")
+        # Undo state depends on manifest, not phase — refresh it always.
+        self._refresh_undo_button()
 
     # ---- Config ----
 
@@ -2036,10 +2476,26 @@ class WallpaperOrganizerApp:
             self.source_var.set(cfg.get("source", ""))
             self.dest_var.set(cfg.get("dest", ""))
             self.copy_var.set(cfg.get("copy", True))
-            self.threshold_var.set(cfg.get("threshold", 0.15))
+            default_threshold = cfg.get("threshold", DEFAULT_THRESHOLD)
+            self.threshold_var.set(default_threshold)
             cats = cfg.get("categories")
             if cats:
-                self._loaded_cats = [tuple(c) for c in cats]
+                # Migrate 2-tuple categories from older configs to 3-tuples.
+                # Pre-v1.1.0 configs stored (name, prompt) and used the global
+                # threshold for everything. Newer configs store (name, prompt,
+                # threshold) per category. On load, missing thresholds inherit
+                # the global default so nothing changes for existing users.
+                migrated = []
+                for c in cats:
+                    if len(c) == 2:
+                        migrated.append((c[0], c[1], default_threshold))
+                    elif len(c) >= 3:
+                        try:
+                            t = float(c[2])
+                        except (ValueError, TypeError):
+                            t = default_threshold
+                        migrated.append((c[0], c[1], t))
+                self._loaded_cats = migrated
             # Restore window geometry if saved. Defend against the
             # second-monitor-now-unplugged case by clamping to the current
             # screen — keep only the size, drop the position, if x or y
